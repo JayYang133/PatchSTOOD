@@ -54,4 +54,4 @@
 python main.py --config ./config/SD.conf
 ```
 
-3. If you want to train the model yourself, you can use the code at line 288 of the main file.
+3. If you wish to train the model yourself, please set --istest = False in ./config/SD.conf.
