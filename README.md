@@ -37,7 +37,7 @@
     ├── data                   # Traffic datasets, adjacency matrices, and metadata files
     ├── lib
     │   |──  utils.py          # Utility functions for data preprocessing and evaluation metrics
-    │   |──  DynamicSpatialPartitioner.py New
+    │   |──  DynamicSpatialPartitioner.py # New function
     ├── log                    # Training and testing log files
     ├── models
     │   |──  model.py          # Core implementation of the SqLinear architecture
