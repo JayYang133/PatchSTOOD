@@ -19,11 +19,6 @@
 
 ---
 
-<div align="center">
-
-<img src="./img/model.png">
-
-</div>
 
 ## Requirements
 - torch==1.11.0
