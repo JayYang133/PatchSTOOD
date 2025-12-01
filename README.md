@@ -1,5 +1,5 @@
 <div align="center">
-  <h2><b> SqLinear: A Linear Architecture for Large-Scale Traffic Prediction via Data-Adaptive Square Partitioning
+  <h2><b> PartchSTOOD
  </b></h2>
 </div>
 
@@ -19,21 +19,6 @@
 
 ---
 
-<div align="center">
-
-<img src="./img/model.png">
-
-</div>
-
-## Contributions
-
-**High-Quality Partitioning.** We propose a novel spatial partitioning method that generates balanced, non-overlapping, and geometrically-regular patches without padding requirements, establishing an optimal foundation for large-scale traffic prediction.
-
-**Hierarchical Linear Modling.** We develop a hierarchical linear interaction module that efficiently captures both inter-patch and intra-patch spatio-temporal interactions, reducing the quadratic complexity bottleneck of attention-based approaches to linear complexity while maintaining modeling fidelity.    
-
-**Theoretical Analysis.** We provide rigorous theoretical guarantees for our partitioning method, proving its effectiveness in preserving network topology and ensuring efficiency.
-
-**Extensive Experiments.** An experimental study on 4 large-scale datasets shows that SqLinear achieves the state-of-the-art prediction accuracy while reducing parameter counts by $2\times$ and accelerating training by $3\times$ compared to existing baselines, validating its practical utility for city-scale deployment.
 
 ## Requirements
 - torch==1.11.0
@@ -52,6 +37,7 @@
     ├── data                   # Traffic datasets, adjacency matrices, and metadata files
     ├── lib
     │   |──  utils.py          # Utility functions for data preprocessing and evaluation metrics
+    │   |──  DynamicSpatialPartitioner.py # New function
     ├── log                    # Training and testing log files
     ├── models
     │   |──  model.py          # Core implementation of the SqLinear architecture
@@ -68,4 +54,4 @@
 python main.py --config ./config/SD.conf
 ```
 
-3. If you want to train the model yourself, you can use the code at line 288 of the main file.
+3. If you wish to train the model yourself, please set --istest = False in ./config/SD.conf.
