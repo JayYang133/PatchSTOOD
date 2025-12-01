@@ -30,10 +30,10 @@ class PatchCoreInteraction(nn.Module):
 
         self.head_dim = hidden_size // head
         self.hidden_size = hidden_size
-        self.core_num = core_num
+        self.core_num = core_num # 专家数量
         self.head = head
 
-        self.cores = nn.Parameter(torch.randn((head, core_num, self.head_dim)))
+        self.cores = nn.Parameter(torch.randn((head, core_num, self.head_dim)))# 使用可学习的核心向量作为专家进行信息交互
         self.value = nn.Linear(hidden_size, hidden_size)
 
         ffn_hidden_dim = 4 * (hidden_size + hidden_size) 
@@ -48,23 +48,23 @@ class PatchCoreInteraction(nn.Module):
     def forward(self, input_data):
         b, p, d = input_data.shape
 
-        q = self.value(input_data)
+        q = self.value(input_data) # 将输入映射到查询空间，生成查询向量
 
         q = q.view(b, p, self.head, self.head_dim).transpose(1, 2)
 
-        affiliation = torch.einsum('hcd, bhpd -> bhcp', self.cores, q) / (self.head_dim ** 0.5)
+        affiliation = torch.einsum('hcd, bhpd -> bhcp', self.cores, q) / (self.head_dim ** 0.5) # 计算每个patch与每个专家核心的关联度
 
-        affiliation_core_to_patch = torch.softmax(affiliation, dim=-1)
-        affiliation_patch_to_core = torch.softmax(affiliation, dim=-2)
+        affiliation_core_to_patch = torch.softmax(affiliation, dim=-1) # 每个专家关注哪些patch
+        affiliation_patch_to_core = torch.softmax(affiliation, dim=-2) # 每个patch关注哪些专家
 
         v = input_data.view(b, p, self.head, self.head_dim).transpose(1, 2)
-        v_core = torch.einsum('bhpd, bhcp -> bhcd', v, affiliation_core_to_patch)
-        v_patch = torch.einsum('bhcd, bhcp -> bhpd', v_core, affiliation_patch_to_core)
+        v_core = torch.einsum('bhpd, bhcp -> bhcd', v, affiliation_core_to_patch) # 从patch到专家的信息聚合
+        v_patch = torch.einsum('bhcd, bhcp -> bhpd', v_core, affiliation_patch_to_core) # 从专家到patch的信息传播
         v = v_patch.transpose(1, 2).reshape(b, p, d)
 
         ffn_input = torch.cat([input_data - v, v], dim=2)
         
-        ffn_output = self.ffn(ffn_input)
+        ffn_output = self.ffn(ffn_input) # 前馈网络
 
         output = input_data + ffn_output
         output = self.norm(output)
@@ -78,14 +78,13 @@ class HLI(nn.Module):
         self.num, self.size = num, size
 
         self.inter_patch_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        
+        # patch间交互替换为专家交互
         self.inter_patch_interaction = PatchCoreInteraction(
             hidden_size, 
             core_num=core_num, 
             head=head, 
             drop=0.1
         )
-        
         self.inter_patch_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.inter_patch_mlp = LinearMlp(hidden_size, mlp_hidden_dim)
 
@@ -96,9 +95,17 @@ class HLI(nn.Module):
 
 
     def forward(self, x):
-        B, T, _, D = x.shape
-        P, N = self.num, self.size 
-        assert self.num * self.size == _
+        '''B, T, _, D = x.shape
+        P, N = self.num, self.size  # P: patch num, N: patch size
+        assert self.num * self.size == _'''
+        B, T, L, D = x.shape
+        N = self.size
+        if L == 0:
+            return x
+        if L % N != 0:
+            raise ValueError(f"HLI FWD Error:" f"L={L}, N={self.size}, P_expected_full={self.num}")
+        P = L // N
+        #####
         x = x.reshape(B, T, P, N, D)
 
         x_inter_patch = x.transpose(2, 3).reshape(B*T*N, P, D) 

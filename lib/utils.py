@@ -65,7 +65,7 @@ def read_meta(path):
     return locations
 
 def construct_adj(data, num_node):
-    # construct the adj through the cosine similarity
+
     data_mean = np.mean([data[24*12*i: 24*12*(i+1)] for i in range(data.shape[0]//(24*12))], axis=0)
     data_mean = data_mean.squeeze().T
     tem_matrix = cosine_similarity(data_mean, data_mean)
@@ -73,7 +73,7 @@ def construct_adj(data, num_node):
     return tem_matrix
 
 def augmentAlign(dist_matrix, auglen):
-    # find the most similar points in other leaf nodes
+
     sorted_idx = np.argsort(dist_matrix.reshape(-1)*-1)
     sorted_idx = sorted_idx % dist_matrix.shape[-1]
     augidx = []
@@ -85,19 +85,19 @@ def augmentAlign(dist_matrix, auglen):
     return np.array(augidx, dtype=int)
 
 def loadData(filepath, metapath, P, Q, train_ratio, test_ratio, adjpath, tod, dow, capacity, log, 
-             new_node_ratio=0.1, istest=False, test_ratio_ood=0.1):
+             max_increase_ratio=0.3, istest=False, test_increase_ratio=0.3, test_decrease_ratio=0.1):
 
     Traffic = np.load(filepath)['data'][...,:1]
     locations = read_meta(metapath)
     num_step = Traffic.shape[0]
-    # temporal positions
+
     TE = np.zeros([num_step, 2])
     TE[:,0] = np.array([i % tod for i in range(num_step)])
     TE[:,1] = np.array([(i // tod) % dow for i in range(num_step)])
     TE_tile = np.repeat(np.expand_dims(TE, 1), Traffic.shape[1], 1)
     log_string(log, f'Shape of data: {Traffic.shape}')
     log_string(log, f'Shape of locations: {locations.shape}')
-    # train/val/test 
+
     train_steps = round(train_ratio * num_step)
     test_steps = round(test_ratio * num_step)
     val_steps = num_step - train_steps - test_steps
@@ -112,71 +112,69 @@ def loadData(filepath, metapath, P, Q, train_ratio, test_ratio, adjpath, tod, do
         adj = construct_adj(trainData, locations.shape[1])
         np.save(adjpath, adj)
 
-    # ==================== OOD 节点处理 ====================
     N = Traffic.shape[1]
     nodes = np.arange(N)
     np.random.shuffle(nodes)
-    num_fixed = min(int(N / (1 + 3 * new_node_ratio)), N - 3)# num_val = 1,num_fixed_node = min(int(self.num_nodes / (1 + (self.num_val + 2) * self.new_node_ratio)), \self.num_nodes - self.num_val - 2)
-    num_per  = max(int(num_fixed * new_node_ratio), 1)
-    fixed_idx = np.sort(nodes[:num_fixed])
-    remain = nodes[num_fixed:]
+    
+    num_train_nodes = int(N / (1 + max_increase_ratio)) # 训练集节点数
+    num_inc = int(num_train_nodes * test_increase_ratio) # 测试集新增节点数
+    num_dec = int(num_train_nodes * test_decrease_ratio) # 测试集移除节点数
 
-    train_unobs = np.sort(remain[:num_per])
-    val_unobs   = np.sort(remain[num_per:2*num_per])
-    test_unobs  = np.sort(remain[2*num_per:3*num_per])
-    extra = np.sort(remain[3*num_per:4*num_per])
+    max_available_new = N - num_train_nodes
+    num_inc = min(num_inc, max_available_new)
 
-    if istest:
-        if test_ratio_ood == 0.05:
-            test_unobs = test_unobs[:len(test_unobs)//2]
-        elif test_ratio_ood == 0.15:
-            test_unobs = np.concatenate([test_unobs, extra[:len(test_unobs)//2]])
-        elif test_ratio_ood == 0.2:
-            test_unobs = np.concatenate([test_unobs, extra])
+    train_node = nodes[:num_train_nodes]
+    val_node = train_node # 训练集与验证集节点一致
+    kept_train_nodes = nodes[:num_train_nodes - num_dec]
+    added_new_nodes = nodes[num_train_nodes : num_train_nodes + num_inc]
+    test_node = np.concatenate([kept_train_nodes, added_new_nodes]) 
 
-    train_nodes = np.concatenate([fixed_idx, train_unobs])
-    val_nodes   = np.concatenate([fixed_idx, val_unobs])
-    test_nodes  = np.concatenate([fixed_idx, test_unobs])
-    log_string(log, f'OOD: fixed={num_fixed}, per={num_per}, '
-                   f'test_unobs={len(test_unobs)} (×{test_ratio_ood})')
+    log_string(log, f'OOD Logic Applied:')
+    log_string(log, f'  - Train Base Nodes: {len(train_node)}')
+    log_string(log, f'  - Test Decrease: -{num_dec} nodes (Ratio: {test_decrease_ratio})')
+    log_string(log, f'  - Test Increase: +{num_inc} nodes (Ratio: {test_increase_ratio})')
+    log_string(log, f'  - Final Test Size: {len(test_node)}')
 
-    # ==================== patch划分与重构  ====================
     partitioner = DynamicSpatialPartitioner(all_points=locations.T, 
                                             capacity=capacity)
 
     log_string(log, 'Building initial partition for TRAIN...')
-    partitioner.build(train_nodes)
-    patch_train = partitioner.get_patch_data(capacity, train_nodes)
-    log_string(log, f'Train patches: {len(patch_train[0])} nodes in {len(partitioner.get_patches())} patches')
-
-    log_string(log, 'Updating partition for VAL...')
-    val_partitioner = partitioner.deepcopy()
-    val_partitioner.update_partition(set(val_nodes), log) 
-    patch_val = val_partitioner.get_patch_data(capacity, val_nodes)
-    log_string(log, f'Val patches: {len(patch_val[0])} nodes in {len(partitioner.get_patches())} patches')
+    partitioner.build(train_node)
+    log_string(log, 'Copying initial partition for VAL...')
+    val_partitioner = partitioner.deepcopy() # 验证集树
 
     log_string(log, 'Updating partition for TEST...')
-    test_partitioner = partitioner.deepcopy()
-    test_partitioner.update_partition(set(test_nodes), log)
-    patch_test = test_partitioner.get_patch_data(capacity, test_nodes)
-    log_string(log, f'Test patches: {len(patch_test[0])} nodes in {len(partitioner.get_patches())} patches')
+    test_partitioner = partitioner.deepcopy() # 测试集树
+    test_partitioner.update_partition(set(test_node), log)
 
-    trainTE_sub = trainTE[:, train_nodes, :]
-    valTE_sub   = valTE[:,   val_nodes,   :]
-    testTE_sub  = testTE[:,  test_nodes,  :]
+    trainTE_sub = trainTE[:, train_node, :]
+    valTE_sub   = valTE[:,   val_node,   :]
+    testTE_sub  = testTE[:,  test_node,  :]
 
-    trainX, trainY = seq2instance(trainData[:, train_nodes], P, Q)
-    valX,   valY   = seq2instance(valData[:,   val_nodes],   P, Q)
-    testX,  testY  = seq2instance(testData[:,  test_nodes],  P, Q)
+    trainX, trainY = seq2instance(trainData[:, train_node], P, Q)
+    valX,   valY   = seq2instance(valData[:,   val_node],   P, Q)
+    testX,  testY  = seq2instance(testData[:,  test_node],  P, Q)
     trainXTE, trainYTE = seq2instance(trainTE_sub, P, Q)
     valXTE,   valYTE   = seq2instance(valTE_sub,   P, Q)
     testXTE,  testYTE  = seq2instance(testTE_sub, P, Q)
 
     mean, std = np.mean(trainX), np.std(trainX)
-
     log_string(log, f'Shape of Train: {trainY.shape}')
     log_string(log, f'Shape of Validation: {valY.shape}')
     log_string(log, f'Shape of Test: {testY.shape}')
     log_string(log, f'Mean: {mean} & Std: {std}')
-
-    return trainX, trainY, trainXTE, trainYTE, valX, valY, valXTE, valYTE, testX, testY, testXTE, testYTE, mean, std, patch_train, patch_val, patch_test
+    
+    partition_data = {
+        'train_partitioner': partitioner,
+        'val_partitioner': val_partitioner,
+        'test_partitioner': test_partitioner,
+        'train_nodes': train_node,
+        'val_nodes': val_node,
+        'test_nodes': test_node,
+        'capacity': capacity
+    }
+    
+    return trainX, trainY, trainXTE, trainYTE, \
+           valX, valY, valXTE, valYTE, \
+           testX, testY, testXTE, testYTE, \
+           mean, std, partition_data

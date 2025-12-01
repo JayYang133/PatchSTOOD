@@ -24,17 +24,27 @@ class Solver(object):
         self.valX, self.valY, self.valXTE, self.valYTE,\
         self.testX, self.testY, self.testXTE, self.testYTE,\
         self.mean, self.std,\
-        self.patch_train, self.patch_val, self.patch_test = loadData(
-                                        self.traffic_file, self.meta_file,
-                                        self.input_len, self.output_len,
-                                        self.train_ratio, self.test_ratio,
-                                        self.adj_file,
-                                        self.tod, self.dow,
-                                        self.spa_patchsize, log, self.new_node_ratio, self.istest, self.test_ratio_ood)
+        self.partition_data = loadData(
+                                self.traffic_file, self.meta_file,
+                                self.input_len, self.output_len,
+                                self.train_ratio, self.test_ratio,
+                                self.adj_file,
+                                self.tod, self.dow,
+                                self.spa_patchsize, log, self.max_increase_ratio, self.istest, self.test_increase_ratio, self.test_decrease_ratio)
+        # 训练集需要扰动，需要在train()中分配
+        self.train_partitioner = self.partition_data['train_partitioner']
+        self.train_nodes = self.partition_data['train_nodes']
+        self.capacity = self.partition_data['capacity']
+        # 验证集与测试集不需要空间扰动，可以在初始化时就分配好
+        log_string(log, 'Generating static VAL patches...')
+        self.val_ori_parts_idx, self.val_reo_parts_idx, self.val_reo_all_idx = \
+            self.partition_data['val_partitioner'].get_patch_data(
+                self.capacity, self.partition_data['val_nodes'])
         
-        self.train_ori_parts_idx, self.train_reo_parts_idx, self.train_reo_all_idx = self.patch_train
-        self.val_ori_parts_idx, self.val_reo_parts_idx, self.val_reo_all_idx = self.patch_val
-        self.test_ori_parts_idx, self.test_reo_parts_idx, self.test_reo_all_idx = self.patch_test
+        log_string(log, 'Generating static TEST patches...')
+        self.test_ori_parts_idx, self.test_reo_parts_idx, self.test_reo_all_idx = \
+            self.partition_data['test_partitioner'].get_patch_data(
+                self.capacity, self.partition_data['test_nodes'])
 
         log_string(log, '------------ End -------------\n')
 
@@ -124,6 +134,15 @@ class Solver(object):
         for epoch in tqdm(range(1,self.max_epoch+1)):
             self.model.train()
             train_l_sum, train_acc_sum, batch_count, start = 0.0, 0.0, 0, time.time()
+            # 每个epoch进行一次随机空间扰动
+            patch_train_epoch = self.train_partitioner.get_perturbed_patch_data(
+                        capacity=self.capacity,
+                        current_nodes_ordered=self.train_nodes,
+                        perturb_strategy=self.perturb_strategy,  
+                        leaf_drop_ratio=self.leaf_drop_ratio
+                    )
+            train_ori_parts_idx_epoch, train_reo_parts_idx_epoch, train_reo_all_idx_epoch = patch_train_epoch # 分配扰动后的训练数据
+
             permutation = np.random.permutation(num_train)
             self.trainX = self.trainX[permutation]
             self.trainY = self.trainY[permutation]
@@ -143,7 +162,10 @@ class Solver(object):
                     
                     self.optimizer.zero_grad()
 
-                    y_hat = self.model(NormX,TE,self.train_ori_parts_idx, self.train_reo_parts_idx, self.train_reo_all_idx) ###
+                    y_hat = self.model(NormX, TE, 
+                                       train_ori_parts_idx_epoch, 
+                                       train_reo_parts_idx_epoch, 
+                                       train_reo_all_idx_epoch)
 
                     loss = _compute_loss(Y, y_hat*self.std+self.mean)
                     
@@ -245,8 +267,11 @@ if __name__ == '__main__':
     parser.add_argument('--weight_decay', type=float, default = config['train']['weight_decay'])
     parser.add_argument('--patience', type=int, default = config['train']['patience'])
     parser.add_argument('--istest', type = str, default = config['train']['istest'])
-    parser.add_argument('--new_node_ratio', type = float, default = config['train']['new_node_ratio'])
-    parser.add_argument('--test_ratio_ood', type = float, default = config['train']['test_ratio_ood'])
+    parser.add_argument('--max_increase_ratio', type = float, default = config['train']['max_increase_ratio'])
+    parser.add_argument('--test_increase_ratio', type = float, default = config['train']['test_increase_ratio'])
+    parser.add_argument('--test_decrease_ratio', type = float, default = config['train']['test_decrease_ratio'])  
+    parser.add_argument('--perturb_strategy', type=str, default=config['train']['perturb_strategy'])
+    parser.add_argument('--leaf_drop_ratio', type=float, default=config['train']['leaf_drop_ratio'])
 
     parser.add_argument('--input_len', type = int, default = config['data']['input_len'])
     parser.add_argument('--output_len', type = int, default = config['data']['output_len'])

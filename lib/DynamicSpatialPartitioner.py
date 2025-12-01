@@ -2,6 +2,8 @@ import os
 import torch
 import numpy as np
 import pandas as pd
+import random
+import secrets
 
 def reorderData(parts_idx, mxlen, adj, capacity):
     ori_parts_idx = np.array([], dtype=int)
@@ -22,6 +24,9 @@ def reorderData(parts_idx, mxlen, adj, capacity):
     return ori_parts_idx, reo_parts_idx, reo_all_idx
 
 class PartitionNode:
+    """
+    分区树节点(内部节点或叶子节点)
+    """
     def __init__(self, indices, parent=None, is_leaf=False):
         self.indices = list(indices) 
         self.parent = parent         
@@ -39,14 +44,15 @@ class DynamicSpatialPartitioner:
     def __init__(self, all_points, capacity=8):
 
         self.all_points = all_points # [lng, lat]
-        self.capacity = capacity
-        self.root = None
+        self.capacity = capacity # 每个分区的最大节点数
+        self.root = None # 根节点
 
-        self.node_to_leaf_map = {}
+        self.node_to_leaf_map = {} # 映射：节点索引 -> 所在的叶子节点
 
     def _recursive_build(self, indices, parent=None):
         """
-        square_partition
+        递归构建分区树
+        原square_partition
         """
         if not indices:
             return None
@@ -57,13 +63,13 @@ class DynamicSpatialPartitioner:
         min_xy = sub_points.min(axis=0)
         max_xy = sub_points.max(axis=0)
         node.bbox = (min_xy, max_xy)
-
+        # 终止:节点数量小于等于容量
         if len(indices) <= self.capacity:
             node.is_leaf = True
             for idx in indices:
                 self.node_to_leaf_map[idx] = node
             return node
-
+        # 沿着跨度最大的维度分裂
         span = max_xy - min_xy
         node.split_axis = np.argmax(span)
         
@@ -82,11 +88,11 @@ class DynamicSpatialPartitioner:
         
         left_indices = sorted_indices_global[:split_idx_local]
         right_indices = sorted_indices_global[split_idx_local:]
-        
+        # 归构建左右子树
         left_child = self._recursive_build(list(left_indices), parent=node)
         right_child = self._recursive_build(list(right_indices), parent=node)
         node.children = [left_child, right_child]
-
+        # 每个节点计算R_n
         node.R_n = self._calculate_R_n(node)
         
         return node
@@ -96,8 +102,10 @@ class DynamicSpatialPartitioner:
         self.root = self._recursive_build(list(initial_indices))
 
     def _rebuild_region(self, node, log):
-        # 重构        
-        all_indices_in_region = self._get_all_indices_under(node)
+        """
+        重构区域
+        """   
+        all_indices_in_region = self._get_all_indices_under(node) # 获取该节点下的所有索引
         if not all_indices_in_region:
             return
 
@@ -116,7 +124,7 @@ class DynamicSpatialPartitioner:
             new_subtree_root.W_n = 0
 
     def _find_leaf_for_point(self, point, node=None):
-
+        # 为给定点寻找对应的叶子节点(patch)
         if node is None:
             node = self.root
             
@@ -125,7 +133,7 @@ class DynamicSpatialPartitioner:
 
         if node.is_leaf:
             return node
-        
+        # 根据分裂条件选择搜索路径
         if point[node.split_axis] < node.split_val:
             if node.children[0]:
                 return self._find_leaf_for_point(point, node.children[0])
@@ -139,23 +147,27 @@ class DynamicSpatialPartitioner:
 
 
     def add_node(self, node_index, log):
-
-        point = self.all_points[node_index]
-        leaf = self._find_leaf_for_point(point)
+        """
+        添加新节点到分区树中
+        """
+        point = self.all_points[node_index] # 获取节点坐标
+        leaf = self._find_leaf_for_point(point) # 找到对应的叶子节点(对应的patch)
 
         if leaf is None:
             self.build([node_index])
             return
-
+        # 将节点添加到叶子中
         leaf.indices.append(node_index)
         self.node_to_leaf_map[node_index] = leaf
-
+        # 超过容量需要分裂
         if len(leaf.indices) > self.capacity:
             self._split_leaf(leaf, log)
 
     def _split_leaf(self, node, log):
-        
-        node.is_leaf = False
+        """
+        添加新节点到分区树中，超过容量需要分裂
+        """
+        node.is_leaf = False # 将叶子节点转为内部节点
         current_indices = node.indices
         node.indices = [] 
         
@@ -163,70 +175,77 @@ class DynamicSpatialPartitioner:
         min_xy, max_xy = sub_points.min(axis=0), sub_points.max(axis=0)
         span = max_xy - min_xy
         node.split_axis = np.argmax(span)
-        
+
+        # 排序并选择分割点
         sorted_idx_local = np.argsort(sub_points[:, node.split_axis])
         sorted_indices_global = np.array(current_indices)[sorted_idx_local]
-        
-        split_idx_local = len(sorted_indices_global) // 2
+        split_idx_local = len(sorted_indices_global) // 2 # 中点分割
 
         if split_idx_local == 0:
             split_idx_local = 1
         
         node.split_val = sub_points[sorted_idx_local[split_idx_local], node.split_axis]
-        
+        # 创建左右子节点
         left_indices = sorted_indices_global[:split_idx_local]
         right_indices = sorted_indices_global[split_idx_local:]
 
         left_child = self._recursive_build(list(left_indices), parent=node)
         right_child = self._recursive_build(list(right_indices), parent=node)
         node.children = [left_child, right_child]
-
+        # 更新区域度量
         node.R_n = self._calculate_R_n(node)
-
+        # 向上传播分裂信息，可能触发重构
         self._propagate_split_metric(node.parent, log)
 
     def remove_node(self, node_index, log):
-
+        """
+        从分区树中移除节点
+        """
         if node_index not in self.node_to_leaf_map:
             return
             
-        leaf = self.node_to_leaf_map.pop(node_index)
+        leaf = self.node_to_leaf_map.pop(node_index) # 从映射中移除
 
         if node_index in leaf.indices:
-            leaf.indices.remove(node_index)
+            leaf.indices.remove(node_index) # 从叶子节点的索引列表中移除
 
         if not leaf.indices:
-            self._prune_leaf(leaf, log)
+            self._prune_leaf(leaf, log) # 如果叶子(patch)变空，进行剪枝
 
     def _prune_leaf(self, leaf, log):
         """
-        删除空 Patch，并可能触发父节点合并
+        剪枝空叶子节点 - 删除空叶子并可能合并父节点
         """
         parent = leaf.parent
         if parent is None:
             if self.root == leaf:
                 self.root = None
             return
-
+        # 找到兄弟节点（父节点的另一个子节点）
         sibling = parent.children[0] if parent.children[1] == leaf else parent.children[1]
         grandparent = parent.parent
         if grandparent is None:
+            # 父节点是根节点的情况
             self.root = sibling
             if sibling:
                 sibling.parent = None
         else:
+            # 否则用兄弟节点替换父节点
             if grandparent.children[0] == parent:
                 grandparent.children[0] = sibling
             else:
                 grandparent.children[1] = sibling
             if sibling:
                 sibling.parent = grandparent
-        
+        # 检查是否需要重构
         if grandparent:
             self._check_rebuild(grandparent, log)
 
     def _propagate_split_metric(self, node, log):
-
+        """
+        向上传播分裂度量 - 更新祖先节点的分裂权重       
+        当节点发生分裂时，需要向上更新所有祖先节点的W_n值
+        """
         curr = node
         while curr is not None:
             curr.W_n += 1
@@ -237,7 +256,7 @@ class DynamicSpatialPartitioner:
 
     def _calculate_R_n(self, node):
         """
-        最大跨度(对角线长)
+        区域范围度量：最大跨度(对角线长)
         """
         if node.is_leaf or node.bbox is None:
             return 1.0
@@ -247,6 +266,10 @@ class DynamicSpatialPartitioner:
         return 1.0 / (diag_span + 1e-6)
         
     def _calculate_health(self, node):
+        """
+        分区健康度
+        实际节点数 / 理论最大容量(填充率)
+        """
         leaves = self._get_all_leaves_under(node)
         if not leaves:
             return 1.0
@@ -258,6 +281,10 @@ class DynamicSpatialPartitioner:
         return health
 
     def _check_rebuild(self, node, log):
+        """
+        检查是否需要重构节点
+        健康度较低且分裂频繁的区域需要重构
+        """
         if node is None or node.is_leaf:
             return
 
@@ -269,6 +296,9 @@ class DynamicSpatialPartitioner:
             self._rebuild_region(node, log)
 
     def _get_all_leaves_under(self, node):
+        """
+        获取节点下的所有叶子节点
+        """
         leaves = []
         if node is None:
             return leaves
@@ -285,6 +315,9 @@ class DynamicSpatialPartitioner:
         return leaves
 
     def _get_all_indices_under(self, node):
+         """
+         获取节点下的所有索引
+         """
         indices = []
         leaves = self._get_all_leaves_under(node)
         for leaf in leaves:
@@ -292,10 +325,18 @@ class DynamicSpatialPartitioner:
         return list(set(indices))
 
     def get_patches(self):
-        leaves = self._get_all_leaves_under(self.root)
-        return [l.indices for l in leaves if l.indices]
+        """
+        获取当前所有分区（非空叶子节点）
+        """
+        leaves = self._get_all_leaves_under(self.root) # 所有叶子
+        return [l.indices for l in leaves if l.indices] # 返回非空分区的索引列表
 
     def update_partition(self, new_node_set, log):
+        """
+        更新分区结构        
+        1. 移除不再存在的节点
+        2. 添加新出现的节点
+        """
         current_node_set = set(self.node_to_leaf_map.keys())
         
         nodes_to_remove = current_node_set - new_node_set
@@ -308,16 +349,23 @@ class DynamicSpatialPartitioner:
             self.add_node(idx, log)
 
     def get_patch_data(self, capacity, current_nodes_ordered):
-        parts_idx = self.get_patches()
+        """
+        获取分区数据
+    
+        将分区索引转换为模型需要的格式，包括：
+        - 全局索引到局部索引的映射
+        - 重新排序的索引数组
+        """
+        parts_idx = self.get_patches() # 获取所有分区
         
         if not parts_idx:
             return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
-
+        # 创建全局索引到局部索引的映射
         global_to_local_map = {
             global_idx: local_idx 
             for local_idx, global_idx in enumerate(current_nodes_ordered)
         }
-
+        # 将全局索引转换为局部索引
         local_parts_idx = []
         for p_list in parts_idx:
             local_patch_filtered = []
@@ -331,7 +379,7 @@ class DynamicSpatialPartitioner:
         
         if not local_parts_idx:
             return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
-
+        # 重排数据(原SqLinear)
         mxlen = max(len(p) for p in local_parts_idx)
         ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(local_parts_idx, mxlen, None, capacity) 
         
@@ -368,7 +416,9 @@ class DynamicSpatialPartitioner:
         return new_node
 
     def deepcopy(self):
-
+        """
+        避免val和test重构影响train的树，需要拷贝一棵树进行重构
+        """
         new_partitioner = DynamicSpatialPartitioner(
             all_points=self.all_points, 
             capacity=self.capacity,
@@ -391,3 +441,86 @@ class DynamicSpatialPartitioner:
         new_partitioner.node_to_leaf_map = node_map
         
         return new_partitioner
+    
+    def get_perturbed_patch_data(self, capacity, current_nodes_ordered,
+                                 perturb_strategy='both', 
+                                 leaf_drop_ratio=0.1,
+                                 max_mask_ratio=0.2):
+        """
+        空间索引扰动
+        leaf_drop_ratio为随机剪枝的剪枝率
+        max_mask_ratio为子树遮蔽的最大遮蔽率
+        """
+        # 获取所有叶子节点(patch)
+        all_leaves = self._get_all_leaves_under(self.root)
+        total_leaves_count = len(all_leaves)
+        
+        perturbed_leaves = list(all_leaves) 
+        if not perturbed_leaves:
+             return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+
+        # 选择扰动策略
+        effective_strategy = perturb_strategy
+        if perturb_strategy == 'both':
+            effective_strategy = secrets.choice(['leaf_drop', 'subtree_mask'])
+        # 随机剪枝
+        if effective_strategy == 'leaf_drop' and len(perturbed_leaves) > 1:
+            num_to_keep = int(len(perturbed_leaves) * (1.0 - leaf_drop_ratio))
+            perturbed_leaves = random.sample(perturbed_leaves, k=num_to_keep)# 随机保留1.0 - leaf_drop_ratio的叶子结点
+        # 子树遮蔽
+        elif effective_strategy == 'subtree_mask':
+            candidate_nodes = []
+            # 搜索寻找合适的子树(含节点max_mask_ratio以下)
+            q = [self.root]
+            while q:
+                curr = q.pop(0)
+                if curr and not curr.is_leaf:
+                    
+                    leaves_under = self._get_all_leaves_under(curr)
+                    ratio = len(leaves_under) / (total_leaves_count + 1e-6)
+
+                    if 0.0 < ratio <= max_mask_ratio:
+                        candidate_nodes.append((curr, leaves_under))
+
+                    for child in curr.children:
+                        q.append(child)
+            # 如果有候选子树，随机选择一个进行屏蔽
+            if candidate_nodes:
+                node_to_mask, masked_leaves = random.choice(candidate_nodes)
+                masked_set = set(masked_leaves)
+                
+                perturbed_leaves = [leaf for leaf in perturbed_leaves if leaf not in masked_set] # 从扰动叶子中移除被屏蔽的叶子
+            else:
+                # 回退到随机剪枝
+                num_to_keep = int(len(perturbed_leaves) * 0.9)
+                perturbed_leaves = random.sample(perturbed_leaves, k=num_to_keep)
+
+        parts_idx = [l.indices for l in perturbed_leaves if l.indices]
+        
+        if not parts_idx:
+             return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+        # 全局到局部索引转换
+        global_to_local_map = {
+            global_idx: local_idx 
+            for local_idx, global_idx in enumerate(current_nodes_ordered)
+        }
+ 
+        local_parts_idx = []
+        for p_list in parts_idx: 
+            local_patch_filtered = []
+            for g_idx in p_list:
+                local_idx = global_to_local_map.get(g_idx) 
+                if local_idx is not None:
+                    local_patch_filtered.append(local_idx)
+           
+            if local_patch_filtered:
+                local_parts_idx.append(local_patch_filtered)
+       
+        if not local_parts_idx:
+            return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+ 
+        mxlen = max(len(p) for p in local_parts_idx)
+        
+        ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(local_parts_idx, mxlen, None, capacity) 
+        
+        return (ori_parts_idx, reo_parts_idx, reo_all_idx)
