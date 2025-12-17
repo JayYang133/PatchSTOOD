@@ -315,9 +315,9 @@ class DynamicSpatialPartitioner:
         return leaves
 
     def _get_all_indices_under(self, node):
-         """
+        """
          获取节点下的所有索引
-         """
+        """
         indices = []
         leaves = self._get_all_leaves_under(node)
         for leaf in leaves:
