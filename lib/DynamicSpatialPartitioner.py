@@ -315,9 +315,9 @@ class DynamicSpatialPartitioner:
         return leaves
 
     def _get_all_indices_under(self, node):
-         """
-         获取节点下的所有索引
-         """
+        """
+        获取节点下的所有索引
+        """
         indices = []
         leaves = self._get_all_leaves_under(node)
         for leaf in leaves:
@@ -348,7 +348,8 @@ class DynamicSpatialPartitioner:
         for idx in nodes_to_add:
             self.add_node(idx, log)
 
-    def get_patch_data(self, capacity, current_nodes_ordered):
+    # 无padding
+    '''def get_patch_data_without_padding(self, capacity, current_nodes_ordered):
         """
         获取分区数据
     
@@ -382,6 +383,120 @@ class DynamicSpatialPartitioner:
         # 重排数据(原SqLinear)
         mxlen = max(len(p) for p in local_parts_idx)
         ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(local_parts_idx, mxlen, None, capacity) 
+        
+        return (ori_parts_idx, reo_parts_idx, reo_all_idx)'''
+    
+    # 这个版本是第一版含padding的，理论上会造成最后一个patch 的padding节点过多
+    '''def get_patch_data_version1(self, capacity, current_nodes_ordered):
+        """
+        获取 Patch 数据，返回相对于当前节点子集的局部重排序索引。
+        """
+        parts_idx = self.get_patches() # 返回全局索引
+        
+        if not parts_idx:
+            return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+
+        global_to_local_map = {
+            global_idx: local_idx 
+            for local_idx, global_idx in enumerate(current_nodes_ordered)
+        }
+
+        # 2. 将 parts_idx (全局索引) 转换为局部索引
+        local_parts_idx = []
+        for p_list in parts_idx:
+            local_patch_filtered = []
+            for g_idx in p_list:
+                local_idx = global_to_local_map.get(g_idx) 
+                if local_idx is not None: 
+                    local_patch_filtered.append(local_idx)
+            
+            if local_patch_filtered:
+                local_parts_idx.append(local_patch_filtered)
+        
+        if not local_parts_idx:
+            return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+
+        # 3. 合并所有节点并重新分配到固定大小的patches
+        all_nodes = []
+        for patch in local_parts_idx:
+            all_nodes.extend(patch)
+        
+        total_nodes = len(all_nodes)
+        num_patches = (total_nodes + capacity - 1) // capacity
+        
+        balanced_patches = []
+        current_idx = 0
+        
+        for i in range(num_patches):
+            # 为每个patch分配capacity个节点
+            patch_size = capacity
+            
+            # 获取实际节点
+            patch_nodes = all_nodes[current_idx:current_idx+patch_size]
+            
+            # 如果节点数不足，使用padding（重复最后一个节点）
+            if len(patch_nodes) < patch_size:
+                if patch_nodes:  # 如果有实际节点，使用最后一个节点进行padding
+                    padding = [patch_nodes[-1]] * (patch_size - len(patch_nodes))
+                    patch_nodes.extend(padding)
+
+            
+            balanced_patches.append(patch_nodes)
+            current_idx += patch_size
+
+        mxlen = capacity 
+        ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(balanced_patches, mxlen, None, capacity) 
+        
+        return (ori_parts_idx, reo_parts_idx, reo_all_idx)'''
+
+    # 这个版本是第二版，对每个patch独立padding
+    def get_patch_data(self, capacity, current_nodes_ordered):
+        """
+        获取 Patch 数据，返回相对于当前节点子集的局部重排序索引。
+        """
+        parts_idx = self.get_patches() # 返回全局索引
+        
+        if not parts_idx:
+            return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+
+        global_to_local_map = {
+            global_idx: local_idx 
+            for local_idx, global_idx in enumerate(current_nodes_ordered)
+        }
+
+        # 2. 将 parts_idx (全局索引) 转换为局部索引
+        local_parts_idx = []
+        for p_list in parts_idx:
+            local_patch_filtered = []
+            for g_idx in p_list:
+                local_idx = global_to_local_map.get(g_idx) 
+                if local_idx is not None: 
+                    local_patch_filtered.append(local_idx)
+            
+            if local_patch_filtered:
+                local_parts_idx.append(local_patch_filtered)
+        
+        if not local_parts_idx:
+            return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+
+        # 3. 对每个patch独立处理，使用最后一个元素padding
+        balanced_patches = []
+        
+        for patch in local_parts_idx:
+            if not patch:  
+                continue
+            padded_patch = list(patch)  
+            
+            if len(padded_patch) < capacity:
+                # 用最后一个节点填充
+                last_node = padded_patch[-1] if padded_patch else 0
+                while len(padded_patch) < capacity:
+                    padded_patch.append(last_node)
+            
+            balanced_patches.append(padded_patch)
+
+        mxlen = capacity 
+        ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(balanced_patches, mxlen, None, capacity) 
         
         return (ori_parts_idx, reo_parts_idx, reo_all_idx)
 
@@ -441,8 +556,9 @@ class DynamicSpatialPartitioner:
         new_partitioner.node_to_leaf_map = node_map
         
         return new_partitioner
-    
-    def get_perturbed_patch_data(self, capacity, current_nodes_ordered,
+
+    # 无padding版本
+    '''def get_perturbed_patch_data_without_padding(self, capacity, current_nodes_ordered,
                                  perturb_strategy='both', 
                                  leaf_drop_ratio=0.1,
                                  max_mask_ratio=0.2):
@@ -521,6 +637,99 @@ class DynamicSpatialPartitioner:
  
         mxlen = max(len(p) for p in local_parts_idx)
         
+        ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(local_parts_idx, mxlen, None, capacity) 
+        
+        return (ori_parts_idx, reo_parts_idx, reo_all_idx)'''
+
+    # 含padding版本，对每个patch独立padding
+    def get_perturbed_patch_data(self, capacity, current_nodes_ordered,
+                                 perturb_strategy='both', 
+                                 leaf_drop_ratio=0.1,
+                                 max_mask_ratio=0.2):
+        """
+        获取扰动后的 Patch 数据，用于训练时的空间索引扰动。
+        """
+
+        # 1. 获取所有叶子节点
+        all_leaves = self._get_all_leaves_under(self.root)
+        total_leaves_count = len(all_leaves)
+        
+        perturbed_leaves = list(all_leaves) 
+        if not perturbed_leaves:
+             return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+
+        effective_strategy = perturb_strategy
+        if perturb_strategy == 'both':
+            effective_strategy = secrets.choice(['subtree_mask', 'leaf_drop'])
+        
+        # --- 策略 1: 随机叶节点丢弃 ---
+        if effective_strategy == 'leaf_drop' and len(perturbed_leaves) > 1:
+            num_to_keep = int(len(perturbed_leaves) * (1.0 - leaf_drop_ratio))
+            perturbed_leaves = random.sample(perturbed_leaves, k=num_to_keep)
+        
+        # --- 策略 2: 子树遮蔽 ---
+        elif effective_strategy == 'subtree_mask':
+            # 收集所有符合“规模约束”的内部节点
+            candidate_nodes = []
+            
+            # 遍历所有节点
+            q = [self.root]
+            while q:
+                curr = q.pop(0)
+                if curr and not curr.is_leaf:
+                    # 检查该节点下的叶子数量
+                    leaves_under = self._get_all_leaves_under(curr)
+                    ratio = len(leaves_under) / (total_leaves_count + 1e-6)
+                    
+                    # 只有当遮蔽比例小于阈值时，才作为候选
+                    if 0.0 < ratio <= max_mask_ratio:
+                        candidate_nodes.append((curr, leaves_under))
+                    
+                    # 继续遍历子节点
+                    for child in curr.children:
+                        q.append(child)
+            
+            if candidate_nodes:
+                # 随机选择一个符合条件的子树
+                node_to_mask, masked_leaves = random.choice(candidate_nodes)
+                masked_set = set(masked_leaves)
+                
+                # 移除
+                perturbed_leaves = [leaf for leaf in perturbed_leaves if leaf not in masked_set]
+            else:
+                # 如果没有符合条件的子树，退化为 leaf_drop
+                num_to_keep = int(len(perturbed_leaves) * 0.9)
+                perturbed_leaves = random.sample(perturbed_leaves, k=num_to_keep)
+
+        # 4. 从扰动后的叶子节点中提取全局索引，形成分区索引列表
+        parts_idx = [l.indices for l in perturbed_leaves if l.indices]
+
+        if not parts_idx:
+             return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+ 
+        global_to_local_map = {
+            global_idx: local_idx 
+            for local_idx, global_idx in enumerate(current_nodes_ordered)
+        }
+        # 5. padding
+        local_parts_idx = []
+        for p_list in parts_idx: 
+            local_patch_filtered = []
+            for g_idx in p_list:
+                local_idx = global_to_local_map.get(g_idx) 
+                if local_idx is not None:
+                    local_patch_filtered.append(local_idx)
+           
+            if local_patch_filtered:
+                # 如果patch的大小小于capacity，使用当前patch的最后一个节点进行padding
+                while len(local_patch_filtered) < capacity:
+                    local_patch_filtered.append(local_patch_filtered[-1])
+                local_parts_idx.append(local_patch_filtered)
+       
+        if not local_parts_idx:
+            return (np.array([], dtype=int), np.array([], dtype=int), np.array([], dtype=int))
+ 
+        mxlen = capacity
         ori_parts_idx, reo_parts_idx, reo_all_idx = reorderData(local_parts_idx, mxlen, None, capacity) 
         
         return (ori_parts_idx, reo_parts_idx, reo_all_idx)

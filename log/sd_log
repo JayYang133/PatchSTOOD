@@ -1,0 +1,70 @@
+------------ Options -------------
+config: config/SD.conf
+cuda: 0
+seed: 2025
+batch_size: 16
+max_epoch: 60
+learning_rate: 0.001
+weight_decay: 0.0001
+patience: 5
+istest: False
+max_increase_ratio: 0.3
+test_increase_ratio: 0.3
+test_decrease_ratio: 0.1
+perturb_strategy: both
+leaf_drop_ratio: 0.1
+tood: True
+input_len: 12
+output_len: 12
+train_ratio: 0.6
+val_ratio: 0.2
+test_ratio: 0.2
+year: 2017
+layers: 1
+tem_patchsize: 12
+tem_patchnum: 1
+spa_patchsize: 8
+spa_patchnum: 132
+node_num: 716
+tod: 96
+dow: 7
+input_dims: 64
+node_dims: 64
+tod_dims: 32
+dow_dims: 32
+mlp_ratio: 3.0
+rank: 2
+dataset: sd
+traffic_file: ./data/SD/
+meta_file: ./data/SD/sd_meta.csv
+adj_file: ./data/SD/adj.npy
+model_file: ./cpt/sd_model
+log_file: ./log/sd_log
+-------------- End ----------------
+
+------------ Loading Data -------------
+Shape of data: (35040, 716, 1)
+Shape of locations: (2, 716)
+OOD Logic Applied:
+  - Train Base Nodes: 550
+  - Test Decrease: -55 nodes (Ratio: 0.1)
+  - Test Increase: +165 nodes (Ratio: 0.3)
+  - Final Test Size: 660
+Building initial partition for TRAIN...
+Copying initial partition for VAL...
+Updating partition for TEST...
+Shape of Train: (21001, 12, 550, 1)
+Shape of Validation: (6985, 12, 550, 1)
+Shape of Test: (6985, 12, 660, 1)
+Mean: 242.88247813596178 & Std: 183.4027518071551
+Generating static VAL patches...
+Generating static TEST patches...
+------------ End -------------
+
+------------ Parameters -------------
+
+Parameters: 651,052
+------------ End -------------
+
+
+======================TRAIN MODE======================

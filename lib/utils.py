@@ -84,10 +84,12 @@ def augmentAlign(dist_matrix, auglen):
             break
     return np.array(augidx, dtype=int)
 
+#新版本-tood
 def loadData(filepath, metapath, P, Q, train_ratio, test_ratio, adjpath, tod, dow, capacity, log, 
-             max_increase_ratio=0.3, istest=False, test_increase_ratio=0.3, test_decrease_ratio=0.1):
+             max_increase_ratio=0.3, istest=False, test_increase_ratio=0.3, test_decrease_ratio=0.1, year=2017, dataset='sd'):
 
-    Traffic = np.load(filepath)['data'][...,:1]
+    filename = f"flow{dataset}_{year}.npz"
+    Traffic = np.load(os.path.join(filepath, filename))['data'][...,:1]
     locations = read_meta(metapath)
     num_step = Traffic.shape[0]
 
@@ -113,8 +115,11 @@ def loadData(filepath, metapath, P, Q, train_ratio, test_ratio, adjpath, tod, do
         np.save(adjpath, adj)
 
     N = Traffic.shape[1]
+
+    np.random.seed(2025)
     nodes = np.arange(N)
     np.random.shuffle(nodes)
+    np.random.seed(None)
     
     num_train_nodes = int(N / (1 + max_increase_ratio)) # 训练集节点数
     num_inc = int(num_train_nodes * test_increase_ratio) # 测试集新增节点数

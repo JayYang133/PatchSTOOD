@@ -30,13 +30,21 @@ class Solver(object):
                                 self.train_ratio, self.test_ratio,
                                 self.adj_file,
                                 self.tod, self.dow,
-                                self.spa_patchsize, log, self.max_increase_ratio, self.istest, self.test_increase_ratio, self.test_decrease_ratio)
+                                self.spa_patchsize, log, self.max_increase_ratio, self.istest, self.test_increase_ratio, self.test_decrease_ratio, 
+                                self.year, self.dataset)
         # 训练集需要扰动，需要在train()中分配
         self.train_partitioner = self.partition_data['train_partitioner']
         self.train_nodes = self.partition_data['train_nodes']
         self.capacity = self.partition_data['capacity']
         # 验证集与测试集不需要空间扰动，可以在初始化时就分配好
         log_string(log, 'Generating static VAL patches...')
+
+        # ----------------------------------
+        '''self.train_ori_parts_idx, self.train_reo_parts_idx, self.train_reo_all_idx = \
+            self.partition_data['train_partitioner'].get_patch_data(
+                self.capacity, self.partition_data['train_nodes'])'''
+        # ----------------------------------
+
         self.val_ori_parts_idx, self.val_reo_parts_idx, self.val_reo_all_idx = \
             self.partition_data['val_partitioner'].get_patch_data(
                 self.capacity, self.partition_data['val_nodes'])
@@ -166,7 +174,8 @@ class Solver(object):
                                        train_ori_parts_idx_epoch, 
                                        train_reo_parts_idx_epoch, 
                                        train_reo_all_idx_epoch)
-
+                    # y_hat = self.model(NormX, TE, self.train_ori_parts_idx, self.train_reo_parts_idx, self.train_reo_all_idx)
+                
                     loss = _compute_loss(Y, y_hat*self.std+self.mean)
                     
                     loss.backward()
@@ -195,9 +204,8 @@ class Solver(object):
         
         log_string(log, f'Best epoch is: {self.best_epoch}')
 
-    def test(self):
-        log_string(log, "======================TEST MODE======================")
-        self.model.load_state_dict(torch.load(self.model_file, map_location=self.device))
+    # tood
+    def test_single_year(self):
         self.model.eval()
         num_val = self.testX.shape[0]
         pred = []
@@ -229,7 +237,7 @@ class Solver(object):
 
                     pred.append(y_hat.cpu().numpy()*self.std+self.mean)
                     label.append(Y)
-        
+
         pred = np.concatenate(pred, axis = 0)
         label = np.concatenate(label, axis = 0)
 
@@ -251,6 +259,69 @@ class Solver(object):
         log_string(log, 'average, mae: %.4f, rmse: %.4f, mape: %.4f' % (mae, rmse, mape))
         
         return np.stack(maes, 0), np.stack(rmses, 0), np.stack(mapes, 0)
+
+    def test(self):
+        log_string(log, "======================TEST MODE======================")
+        self.model.load_state_dict(torch.load(self.model_file, map_location=self.device))
+        
+        if self.tood == 'True':
+            log_string(log, "T-OOD")
+            log_string(log, "Testing on 2017-2021 years...")
+            
+            all_maes = []
+            all_rmses = []
+            all_mapes = []
+            
+            for year in range(2017, 2022):
+                log_string(log, f"\n--- Testing on year {year} ---")
+                
+                # 为当前年份重新加载数据
+                _, _, _, _, _, _, _, _, \
+                testX, testY, testXTE, testYTE, \
+                mean, std, \
+                partition_data = loadData(
+                                    self.traffic_file, self.meta_file,
+                                    self.input_len, self.output_len,
+                                    self.train_ratio, self.test_ratio,
+                                    self.adj_file,
+                                    self.tod, self.dow,
+                                    self.spa_patchsize, log, self.max_increase_ratio, self.istest, self.test_increase_ratio, self.test_decrease_ratio, year, self.dataset)
+                
+                # 更新当前实例的数据
+                self.testX = testX
+                self.testY = testY
+                self.testXTE = testXTE
+                self.testYTE = testYTE
+                self.mean = mean
+                self.std = std
+                
+                # 更新测试集的补丁信息
+                self.test_ori_parts_idx, self.test_reo_parts_idx, self.test_reo_all_idx = \
+                    partition_data['test_partitioner'].get_patch_data(
+                        self.capacity, partition_data['test_nodes'])
+                
+                # 测试当前年份
+                maes, rmses, mapes = self.test_single_year()
+                all_maes.append(maes)
+                all_rmses.append(rmses)
+                all_mapes.append(mapes)
+            
+            # 计算五年结果的平均值
+            log_string(log, "\n--- Average Results for 2017-2021 ---")
+            avg_maes = np.mean(all_maes, axis=0)
+            avg_rmses = np.mean(all_rmses, axis=0)
+            avg_mapes = np.mean(all_mapes, axis=0)
+            
+            for i in range(avg_maes.shape[0]-1):
+                log_string(log,'step %d, avg_mae: %.4f, avg_rmse: %.4f, avg_mape: %.4f' % (i+1, avg_maes[i], avg_rmses[i], avg_mapes[i]))
+            
+            log_string(log, 'average, avg_mae: %.4f, avg_rmse: %.4f, avg_mape: %.4f' % (avg_maes[-1], avg_rmses[-1], avg_mapes[-1]))
+            
+            return avg_maes, avg_rmses, avg_mapes
+        elif self.tood == 'False':
+            # 普通测试模式
+            log_string(log, "Without T-OOD")
+            return self.test_single_year()
         
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -272,12 +343,14 @@ if __name__ == '__main__':
     parser.add_argument('--test_decrease_ratio', type = float, default = config['train']['test_decrease_ratio'])  
     parser.add_argument('--perturb_strategy', type=str, default=config['train']['perturb_strategy'])
     parser.add_argument('--leaf_drop_ratio', type=float, default=config['train']['leaf_drop_ratio'])
+    parser.add_argument('--tood', type=str, default=config['train']['tood'])
 
     parser.add_argument('--input_len', type = int, default = config['data']['input_len'])
     parser.add_argument('--output_len', type = int, default = config['data']['output_len'])
     parser.add_argument('--train_ratio', type = float, default = config['data']['train_ratio'])
     parser.add_argument('--val_ratio', type = float, default = config['data']['val_ratio'])
     parser.add_argument('--test_ratio', type = float, default = config['data']['test_ratio'])
+    parser.add_argument('--year', type=int, default = config['data']['year'])
 
     parser.add_argument('--layers', type=int, default = config['param']['layers'])
     parser.add_argument('--tem_patchsize', type = int, default = config['param']['tps'])
@@ -294,6 +367,7 @@ if __name__ == '__main__':
     parser.add_argument('--mlp_ratio', type=float, default = config['param']['mlp_ratio'])
     parser.add_argument('--rank', type=int, default = config['param']['rank'])
 
+    parser.add_argument('--dataset', default = config['file']['dataset'])
     parser.add_argument('--traffic_file', default = config['file']['traffic'])
     parser.add_argument('--meta_file', default = config['file']['meta'])
     parser.add_argument('--adj_file', default = config['file']['adj'])
